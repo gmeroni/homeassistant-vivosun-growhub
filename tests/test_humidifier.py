@@ -7,7 +7,14 @@ from unittest.mock import AsyncMock
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.vivosun_growhub.const import DOMAIN, MODE_AUTO, MODE_MANUAL
+from custom_components.vivosun_growhub.const import (
+    DOMAIN,
+    HMDF_DEFAULT_AUTO_TARGET,
+    HMDF_DEFAULT_MANUAL_LEVEL,
+    HMDF_MODE_MANUAL,
+    HMDF_MODE_OFF,
+    TEMP_SCALE_FACTOR,
+)
 from custom_components.vivosun_growhub.humidifier import (
     VivosunDehumidifierEntity,
     VivosunHumidifierEntity,
@@ -17,8 +24,8 @@ from custom_components.vivosun_growhub.models import DeviceInfo, RuntimeData
 from custom_components.vivosun_growhub.shadow import (
     build_dhmdf_on_payload,
     build_dhmdf_target_payload,
-    build_hmdf_mode_payload,
-    build_hmdf_on_payload,
+    build_hmdf_manual_payload,
+    build_hmdf_off_payload,
     build_hmdf_target_payload,
 )
 
@@ -128,7 +135,7 @@ async def test_humidifier_state_mapping_and_availability() -> None:
                 "hmdf": {
                     "on": True,
                     "target_humidity": 5500,
-                    "mode": MODE_AUTO,
+                    "mode": HMDF_MODE_MANUAL,
                     "level": 3,
                     "water_warning": False,
                 },
@@ -142,7 +149,7 @@ async def test_humidifier_state_mapping_and_availability() -> None:
     assert entity.is_on is True
     assert entity.target_humidity == 55.0
     assert entity.current_humidity == 48.75
-    assert entity.mode == "auto"
+    assert entity.mode == "manual"
     assert entity.extra_state_attributes == {"level": 3, "water_warning": False}
     assert entity.available is True
     assert entity.device_info.get("model") == "VSHMDH19"
@@ -157,13 +164,13 @@ async def test_humidifier_commands_publish_expected_shadow_payloads() -> None:
 
     await entity.async_turn_on()
     coordinator.async_publish_shadow_update.assert_awaited_once_with(
-        build_hmdf_on_payload(True), device_id=_HUMIDIFIER_DEV_ID
+        build_hmdf_manual_payload(HMDF_DEFAULT_MANUAL_LEVEL), device_id=_HUMIDIFIER_DEV_ID
     )
 
     coordinator.async_publish_shadow_update.reset_mock()
     await entity.async_turn_off()
     coordinator.async_publish_shadow_update.assert_awaited_once_with(
-        build_hmdf_on_payload(False), device_id=_HUMIDIFIER_DEV_ID
+        build_hmdf_off_payload(), device_id=_HUMIDIFIER_DEV_ID
     )
 
     coordinator.async_publish_shadow_update.reset_mock()
@@ -175,13 +182,14 @@ async def test_humidifier_commands_publish_expected_shadow_payloads() -> None:
     coordinator.async_publish_shadow_update.reset_mock()
     await entity.async_set_mode("auto")
     coordinator.async_publish_shadow_update.assert_awaited_once_with(
-        build_hmdf_mode_payload(MODE_AUTO), device_id=_HUMIDIFIER_DEV_ID
+        build_hmdf_target_payload(HMDF_DEFAULT_AUTO_TARGET * TEMP_SCALE_FACTOR),
+        device_id=_HUMIDIFIER_DEV_ID,
     )
 
     coordinator.async_publish_shadow_update.reset_mock()
     await entity.async_set_mode("manual")
     coordinator.async_publish_shadow_update.assert_awaited_once_with(
-        build_hmdf_mode_payload(MODE_MANUAL), device_id=_HUMIDIFIER_DEV_ID
+        build_hmdf_manual_payload(HMDF_DEFAULT_MANUAL_LEVEL), device_id=_HUMIDIFIER_DEV_ID
     )
 
 
@@ -241,3 +249,30 @@ async def test_humidifier_invalid_mode_does_not_publish() -> None:
     await entity.async_set_mode("invalid")
 
     coordinator.async_publish_shadow_update.assert_not_awaited()
+
+
+async def test_humidifier_set_mode_auto_uses_current_target() -> None:
+    coordinator = _StubCoordinator()
+    coordinator.data = {
+        "shadows": {
+            _HUMIDIFIER_DEV_ID: {"hmdf": {"mode": HMDF_MODE_MANUAL, "target_humidity": 5959}}
+        },
+    }
+    entity = _make_entity(coordinator)
+
+    await entity.async_set_mode("auto")
+    coordinator.async_publish_shadow_update.assert_awaited_once_with(
+        build_hmdf_target_payload(5959), device_id=_HUMIDIFIER_DEV_ID
+    )
+
+
+async def test_humidifier_mode_property_off_and_auto() -> None:
+    coordinator = _StubCoordinator()
+    coordinator.data = {"shadows": {_HUMIDIFIER_DEV_ID: {"hmdf": {"mode": HMDF_MODE_OFF}}}}
+    entity = _make_entity(coordinator)
+    # Off reports no HA mode but is_on reflects the off state.
+    assert entity.mode is None
+
+    # Any non-off, non-manual integer surfaces as auto.
+    coordinator.data = {"shadows": {_HUMIDIFIER_DEV_ID: {"hmdf": {"mode": 2}}}}
+    assert entity.mode == "auto"

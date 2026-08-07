@@ -18,6 +18,9 @@ from custom_components.vivosun_growhub.shadow import (
     build_dfan_level_payload,
     build_dhmdf_on_payload,
     build_dhmdf_target_payload,
+    build_hmdf_manual_payload,
+    build_hmdf_off_payload,
+    build_hmdf_target_payload,
     build_light_level_payload,
     build_light_mode_payload,
     build_light_spectrum_payload,
@@ -136,14 +139,14 @@ def test_parse_shadow_document_falls_back_to_desired_when_reported_missing() -> 
         "state": {
             "desired": {
                 "hmdf": {
-                    "on": 1,
-                    "targetHumi": 5500,
+                    "mode": 1,
+                    "auto": {"tHumi": 5500},
                 }
             },
             "metadata": {
                 "desired": {
                     "hmdf": {
-                        "on": {"timestamp": 1777359930},
+                        "mode": {"timestamp": 1777359930},
                     }
                 }
             },
@@ -152,10 +155,8 @@ def test_parse_shadow_document_falls_back_to_desired_when_reported_missing() -> 
 
     parsed = parse_shadow_document(payload)
     assert parsed["hmdf"] == {
+        "mode": 1,
         "on": True,
-        "level": None,
-        "mode": None,
-        "water_warning": False,
         "target_humidity": 5500,
     }
 
@@ -300,6 +301,10 @@ def test_level_payload_builder_validates_bounds() -> None:
         build_cfan_level_payload(201)
     with pytest.raises(ValueError):
         build_dfan_level_payload(101)
+    with pytest.raises(ValueError):
+        build_hmdf_manual_payload(101)
+    with pytest.raises(ValueError):
+        build_hmdf_manual_payload(-1)
 
 
 def test_non_level_payload_builders_match_required_structure() -> None:
@@ -311,6 +316,13 @@ def test_non_level_payload_builders_match_required_structure() -> None:
     assert build_dhmdf_on_payload(False) == {"state": {"desired": {"dhmdf": {"pause": 1}}}}
     assert build_dhmdf_target_payload(6000) == {
         "state": {"desired": {"dhmdf": {"auto": {"tHumi": 6000}}}}
+    }
+    assert build_hmdf_off_payload() == {"state": {"desired": {"hmdf": {"mode": 0}}}}
+    assert build_hmdf_manual_payload(50) == {
+        "state": {"desired": {"hmdf": {"mode": 1, "manu": {"lv": 50}}}}
+    }
+    assert build_hmdf_target_payload(5500) == {
+        "state": {"desired": {"hmdf": {"auto": {"tHumi": 5500}}}}
     }
     assert build_dfan_auto_mode_payload(True) == {"state": {"desired": {"dFan": {"mode": 1}}}}
     assert build_dfan_auto_threshold_payload("tMax", 2800) == {
@@ -362,3 +374,34 @@ def test_parse_reported_fragment_dehumidifier_sparse_state() -> None:
         "on": True,
         "target_humidity": 6000,
     }
+
+
+def test_parse_reported_fragment_humidifier_full_state() -> None:
+    fragment: dict[str, object] = {
+        "hmdf": {
+            "mode": 1,
+            "manu": {"lv": 45},
+            "auto": {"tHumi": 5959},
+            "waterWarn": 0,
+        }
+    }
+
+    parsed = parse_reported_fragment(fragment)
+
+    assert parsed["hmdf"] == {
+        "mode": 1,
+        "on": True,
+        "level": 45,
+        "target_humidity": 5959,
+        "water_warning": False,
+    }
+
+
+def test_parse_reported_fragment_humidifier_sparse_partial_update() -> None:
+    # A partial update with only auto.tHumi must not clobber mode/level/on.
+    parsed = parse_reported_fragment({"hmdf": {"auto": {"tHumi": 7000}}})
+    assert parsed["hmdf"] == {"target_humidity": 7000}
+
+    # mode 0 = off derives on=False.
+    parsed_off = parse_reported_fragment({"hmdf": {"mode": 0}})
+    assert parsed_off["hmdf"] == {"mode": 0, "on": False}

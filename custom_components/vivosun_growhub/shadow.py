@@ -9,6 +9,8 @@ from .const import (
     CFAN_LEVEL_MAP,
     CFAN_NATURAL_WIND_VALUE,
     DFAN_LEVEL_MAP,
+    HMDF_MODE_MANUAL,
+    HMDF_MODE_OFF,
     LIGHT_MIN_BRIGHTNESS,
     MODE_AUTO,
     SENSOR_UNAVAILABLE_SENTINEL,
@@ -380,29 +382,34 @@ def build_dfan_auto_threshold_payload(field: str, value: int | None) -> dict[str
     return _build_desired_payload(SHADOW_KEY_DUCT_FAN, {SHADOW_KEY_AUTO: {field: normalized_value}})
 
 
-def build_hmdf_on_payload(on: bool) -> dict[str, object]:
-    """Build desired humidifier on/off payload."""
-    return _build_desired_payload(SHADOW_KEY_HUMIDIFIER, {"on": int(on)})
+def build_hmdf_off_payload() -> dict[str, object]:
+    """Build desired humidifier off payload (mode 0)."""
+    return _build_desired_payload(SHADOW_KEY_HUMIDIFIER, {SHADOW_KEY_MODE: HMDF_MODE_OFF})
 
 
-def build_hmdf_level_payload(level: int) -> dict[str, object]:
-    """Build desired humidifier manual level payload."""
-    if level < 0 or level > 10:
-        raise ValueError("Humidifier level must be in range 0..10")
+def build_hmdf_manual_payload(level: int) -> dict[str, object]:
+    """Build desired humidifier manual payload (mode 1) at a mist level.
+
+    ``level`` is a 0..100 percentage written straight into ``hmdf.manu.lv``.
+    """
+    if level < 0 or level > 100:
+        raise ValueError("Humidifier manual level must be in range 0..100")
     return _build_desired_payload(
         SHADOW_KEY_HUMIDIFIER,
-        {SHADOW_KEY_MODE: 0, SHADOW_KEY_MANU: {SHADOW_KEY_LEVEL: level}},
+        {SHADOW_KEY_MODE: HMDF_MODE_MANUAL, SHADOW_KEY_MANU: {SHADOW_KEY_LEVEL: level}},
     )
 
 
-def build_hmdf_mode_payload(mode: int) -> dict[str, object]:
-    """Build desired humidifier mode payload (0=manual, 1=auto)."""
-    return _build_desired_payload(SHADOW_KEY_HUMIDIFIER, {SHADOW_KEY_MODE: mode})
-
-
 def build_hmdf_target_payload(target_humidity: int) -> dict[str, object]:
-    """Build desired humidifier auto target humidity (raw, scaled by 100)."""
-    return _build_desired_payload(SHADOW_KEY_HUMIDIFIER, {"targetHumi": target_humidity})
+    """Build desired humidifier auto target humidity under ``hmdf.auto.tHumi``.
+
+    ``target_humidity`` is the raw value scaled by 100 (e.g. ``5959`` = 59.59%).
+    Mirrors the dehumidifier: this writes only the auto target and does not send a
+    mode integer, since the humidifier's auto-mode enum value is not yet confirmed.
+    """
+    return _build_desired_payload(
+        SHADOW_KEY_HUMIDIFIER, {SHADOW_KEY_AUTO: {"tHumi": target_humidity}}
+    )
 
 
 def build_heat_on_payload(on: bool) -> dict[str, object]:
@@ -534,19 +541,36 @@ def _parse_dfan_state(dfan: dict[str, object]) -> DuctFanState:
 
 
 def _parse_hmdf_state(hmdf: dict[str, object]) -> HumidifierState:
+    # Build a sparse result so that partial update/accepted messages (e.g. only
+    # containing "auto") don't clobber unrelated fields via _deep_merge_mapping.
+    # The AeroStream H09 reports mode 0 = off, 1 = manual; on/off is derived from
+    # mode (there is no "on" key) and the auto target lives at hmdf.auto.tHumi.
+    result: HumidifierState = {}
+
     manu = _as_dict(hmdf.get(SHADOW_KEY_MANU))
     manual_level = _as_int(manu.get(SHADOW_KEY_LEVEL)) if manu is not None else None
     level = _as_int(hmdf.get(SHADOW_KEY_LEVEL))
     if level is None:
         level = manual_level
+    if level is not None:
+        result["level"] = level
 
-    return HumidifierState(
-        on=_as_bool(hmdf.get("on")),
-        level=level,
-        mode=_as_int(hmdf.get(SHADOW_KEY_MODE)),
-        water_warning=_as_bool(hmdf.get("waterWarn")),
-        target_humidity=_normalize_sentinel_int(_as_int(hmdf.get("targetHumi"))),
-    )
+    auto = _as_dict(hmdf.get(SHADOW_KEY_AUTO))
+    if auto is not None and "tHumi" in auto:
+        raw_humi = _normalize_sentinel_int(_as_int(auto.get("tHumi")))
+        if raw_humi is not None:
+            result["target_humidity"] = raw_humi
+
+    if "waterWarn" in hmdf:
+        result["water_warning"] = _as_bool(hmdf.get("waterWarn"))
+
+    if SHADOW_KEY_MODE in hmdf:
+        mode = _as_int(hmdf.get(SHADOW_KEY_MODE))
+        result["mode"] = mode
+        if mode is not None:
+            result["on"] = mode != HMDF_MODE_OFF
+
+    return result
 
 
 

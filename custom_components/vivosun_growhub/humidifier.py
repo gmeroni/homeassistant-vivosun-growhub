@@ -11,14 +11,21 @@ from homeassistant.components.humidifier import (
 from homeassistant.components.humidifier.const import HumidifierEntityFeature
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MODE_AUTO, MODE_MANUAL, TEMP_SCALE_FACTOR
+from .const import (
+    DOMAIN,
+    HMDF_DEFAULT_AUTO_TARGET,
+    HMDF_DEFAULT_MANUAL_LEVEL,
+    HMDF_MODE_MANUAL,
+    HMDF_MODE_OFF,
+    TEMP_SCALE_FACTOR,
+)
 from .coordinator import VivosunCoordinator
 from .entity_helpers import build_device_info, is_entity_available, sensor_slice, shadow_slice
 from .shadow import (
     build_dhmdf_on_payload,
     build_dhmdf_target_payload,
-    build_hmdf_mode_payload,
-    build_hmdf_on_payload,
+    build_hmdf_manual_payload,
+    build_hmdf_off_payload,
     build_hmdf_target_payload,
 )
 
@@ -115,9 +122,15 @@ class VivosunHumidifierEntity(CoordinatorEntity[VivosunCoordinator], HumidifierE
         """Return the current humidifier mode."""
         hmdf = self._hmdf_state()
         mode = hmdf.get("mode")
-        if isinstance(mode, int):
-            return "auto" if mode == MODE_AUTO else "manual"
-        return None
+        if not isinstance(mode, int):
+            return None
+        if mode == HMDF_MODE_MANUAL:
+            return "manual"
+        if mode == HMDF_MODE_OFF:
+            return None
+        # Any other reported mode (auto/cycle/timer) surfaces as auto; the exact
+        # auto integer is not yet confirmed for this device.
+        return "auto"
 
     @property
     def available(self) -> bool:
@@ -143,21 +156,21 @@ class VivosunHumidifierEntity(CoordinatorEntity[VivosunCoordinator], HumidifierE
         return attrs
 
     async def async_turn_on(self, **kwargs: object) -> None:
-        """Turn on the humidifier."""
+        """Turn on the humidifier (manual mode at the default mist level)."""
         _ = kwargs
         await self.coordinator.async_publish_shadow_update(
-            build_hmdf_on_payload(True), device_id=self._device_id
+            build_hmdf_manual_payload(HMDF_DEFAULT_MANUAL_LEVEL), device_id=self._device_id
         )
 
     async def async_turn_off(self, **kwargs: object) -> None:
-        """Turn off the humidifier."""
+        """Turn off the humidifier (mode 0)."""
         _ = kwargs
         await self.coordinator.async_publish_shadow_update(
-            build_hmdf_on_payload(False), device_id=self._device_id
+            build_hmdf_off_payload(), device_id=self._device_id
         )
 
     async def async_set_humidity(self, humidity: int) -> None:
-        """Set target humidity percentage."""
+        """Set the auto target humidity percentage (hmdf.auto.tHumi)."""
         target_raw = int(humidity * TEMP_SCALE_FACTOR)
         await self.coordinator.async_publish_shadow_update(
             build_hmdf_target_payload(target_raw), device_id=self._device_id
@@ -165,13 +178,24 @@ class VivosunHumidifierEntity(CoordinatorEntity[VivosunCoordinator], HumidifierE
 
     async def async_set_mode(self, mode: str) -> None:
         """Set humidifier mode (manual or auto)."""
-        if mode == "auto":
+        if mode == "manual":
             await self.coordinator.async_publish_shadow_update(
-                build_hmdf_mode_payload(MODE_AUTO), device_id=self._device_id
+                build_hmdf_manual_payload(HMDF_DEFAULT_MANUAL_LEVEL), device_id=self._device_id
             )
-        elif mode == "manual":
+        elif mode == "auto":
+            # The auto-mode integer is unconfirmed for this device, so we mirror the
+            # dehumidifier and write only the auto target humidity. This does not force
+            # the device into auto mode; it sets the target used once auto is active.
+            # Read the raw (basis-point) target straight from the shadow to avoid a
+            # lossy /100 -> *100 round-trip through the float property.
+            raw = self._hmdf_state().get("target_humidity")
+            target_raw = (
+                raw
+                if isinstance(raw, int) and not isinstance(raw, bool)
+                else HMDF_DEFAULT_AUTO_TARGET * TEMP_SCALE_FACTOR
+            )
             await self.coordinator.async_publish_shadow_update(
-                build_hmdf_mode_payload(MODE_MANUAL), device_id=self._device_id
+                build_hmdf_target_payload(target_raw), device_id=self._device_id
             )
 
     def _hmdf_state(self) -> Mapping[str, object]:

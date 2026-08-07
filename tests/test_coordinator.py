@@ -349,7 +349,7 @@ async def test_coordinator_accepts_desired_only_shadow_payloads(
     device_id = coordinator.device.device_id
     await mqtt.emit(
         TOPIC_SHADOW_GET_ACCEPTED.format(thing=coordinator.device.client_id),
-        b'{"state":{"desired":{"hmdf":{"on":1,"targetHumi":5500}}}}',
+        b'{"state":{"desired":{"hmdf":{"mode":1,"auto":{"tHumi":5500}}}}}',
     )
 
     assert coordinator.data["shadows"][device_id]["hmdf"]["on"] is True
