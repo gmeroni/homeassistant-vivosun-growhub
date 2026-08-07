@@ -352,7 +352,7 @@ async def test_coordinator_accepts_desired_only_shadow_payloads(
         b'{"state":{"desired":{"hmdf":{"mode":1,"auto":{"tHumi":5500}}}}}',
     )
 
-    assert coordinator.data["shadows"][device_id]["hmdf"]["on"] is True
+    assert coordinator.data["shadows"][device_id]["hmdf"]["mode"] == 1
     assert coordinator.data["shadows"][device_id]["hmdf"]["target_humidity"] == 5500
 
     await coordinator.async_shutdown()

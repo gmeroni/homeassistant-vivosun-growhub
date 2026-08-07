@@ -15,8 +15,8 @@ from .const import (
     DOMAIN,
     HMDF_DEFAULT_AUTO_TARGET,
     HMDF_DEFAULT_MANUAL_LEVEL,
+    HMDF_MODE_AUTO,
     HMDF_MODE_MANUAL,
-    HMDF_MODE_OFF,
     TEMP_SCALE_FACTOR,
 )
 from .coordinator import VivosunCoordinator
@@ -90,11 +90,18 @@ class VivosunHumidifierEntity(CoordinatorEntity[VivosunCoordinator], HumidifierE
 
     @property
     def is_on(self) -> bool | None:
-        """Return whether the humidifier is on."""
+        """Return whether the humidifier is producing or armed to produce mist.
+
+        On/off is not a simple mode flag on this device: mode 0 and auto both run
+        the humidistat. Auto counts as on (armed, even when idle at target);
+        otherwise the running level decides (our "off" is manual at level 0).
+        """
         hmdf = self._hmdf_state()
-        on = hmdf.get("on")
-        if isinstance(on, bool):
-            return on
+        if hmdf.get("mode") == HMDF_MODE_AUTO:
+            return True
+        level = hmdf.get("level")
+        if isinstance(level, int):
+            return level > 0
         return None
 
     @property
@@ -122,14 +129,14 @@ class VivosunHumidifierEntity(CoordinatorEntity[VivosunCoordinator], HumidifierE
         """Return the current humidifier mode."""
         hmdf = self._hmdf_state()
         mode = hmdf.get("mode")
-        if not isinstance(mode, int):
-            return None
+        if mode == HMDF_MODE_AUTO:
+            return "auto"
         if mode == HMDF_MODE_MANUAL:
-            return "manual"
-        if mode == HMDF_MODE_OFF:
-            return None
-        # Auto (2) and any other running mode (cycle/timer) surface as auto.
-        return "auto"
+            # Manual at zero output is our "off" state — report no active mode.
+            level = hmdf.get("level")
+            if isinstance(level, int) and level > 0:
+                return "manual"
+        return None
 
     @property
     def available(self) -> bool:
@@ -155,17 +162,15 @@ class VivosunHumidifierEntity(CoordinatorEntity[VivosunCoordinator], HumidifierE
         return attrs
 
     async def async_turn_on(self, **kwargs: object) -> None:
-        """Turn on the humidifier, re-asserting the currently selected mode.
+        """Turn on the humidistat (auto mode) toward the current/last target.
 
-        Auto (the humidistat) is the default; manual is only used when it is the
-        active mode, since it runs at a fixed mist level rather than to a target.
+        Off puts the device in manual-at-zero, so "on" always engages auto rather
+        than resurrecting that. Fixed-output manual is reached via set_mode.
         """
         _ = kwargs
-        if self._hmdf_state().get("mode") == HMDF_MODE_MANUAL:
-            payload = build_hmdf_manual_payload(HMDF_DEFAULT_MANUAL_LEVEL)
-        else:
-            payload = build_hmdf_auto_payload(self._auto_target_raw())
-        await self.coordinator.async_publish_shadow_update(payload, device_id=self._device_id)
+        await self.coordinator.async_publish_shadow_update(
+            build_hmdf_auto_payload(self._auto_target_raw()), device_id=self._device_id
+        )
 
     async def async_turn_off(self, **kwargs: object) -> None:
         """Turn off the humidifier (mode 0)."""

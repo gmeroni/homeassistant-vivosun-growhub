@@ -156,7 +156,6 @@ def test_parse_shadow_document_falls_back_to_desired_when_reported_missing() -> 
     parsed = parse_shadow_document(payload)
     assert parsed["hmdf"] == {
         "mode": 1,
-        "on": True,
         "target_humidity": 5500,
     }
 
@@ -317,7 +316,9 @@ def test_non_level_payload_builders_match_required_structure() -> None:
     assert build_dhmdf_target_payload(6000) == {
         "state": {"desired": {"dhmdf": {"auto": {"tHumi": 6000}}}}
     }
-    assert build_hmdf_off_payload() == {"state": {"desired": {"hmdf": {"mode": 0}}}}
+    assert build_hmdf_off_payload() == {
+        "state": {"desired": {"hmdf": {"mode": 1, "manu": {"lv": 0}}}}
+    }
     assert build_hmdf_manual_payload(50) == {
         "state": {"desired": {"hmdf": {"mode": 1, "manu": {"lv": 50}}}}
     }
@@ -391,7 +392,6 @@ def test_parse_reported_fragment_humidifier_full_state() -> None:
 
     assert parsed["hmdf"] == {
         "mode": 1,
-        "on": True,
         "level": 45,
         "target_humidity": 5959,
         "water_warning": False,
@@ -399,10 +399,10 @@ def test_parse_reported_fragment_humidifier_full_state() -> None:
 
 
 def test_parse_reported_fragment_humidifier_sparse_partial_update() -> None:
-    # A partial update with only auto.tHumi must not clobber mode/level/on.
+    # A partial update with only auto.tHumi must not clobber mode/level.
     parsed = parse_reported_fragment({"hmdf": {"auto": {"tHumi": 7000}}})
     assert parsed["hmdf"] == {"target_humidity": 7000}
 
-    # mode 0 = off derives on=False.
-    parsed_off = parse_reported_fragment({"hmdf": {"mode": 0}})
-    assert parsed_off["hmdf"] == {"mode": 0, "on": False}
+    # On/off is not derived from mode; only the raw mode is surfaced.
+    parsed_mode = parse_reported_fragment({"hmdf": {"mode": 0}})
+    assert parsed_mode["hmdf"] == {"mode": 0}

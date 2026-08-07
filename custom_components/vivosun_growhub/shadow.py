@@ -11,7 +11,6 @@ from .const import (
     DFAN_LEVEL_MAP,
     HMDF_MODE_AUTO,
     HMDF_MODE_MANUAL,
-    HMDF_MODE_OFF,
     LIGHT_MIN_BRIGHTNESS,
     MODE_AUTO,
     SENSOR_UNAVAILABLE_SENTINEL,
@@ -384,8 +383,17 @@ def build_dfan_auto_threshold_payload(field: str, value: int | None) -> dict[str
 
 
 def build_hmdf_off_payload() -> dict[str, object]:
-    """Build desired humidifier off payload (mode 0)."""
-    return _build_desired_payload(SHADOW_KEY_HUMIDIFIER, {SHADOW_KEY_MODE: HMDF_MODE_OFF})
+    """Build desired humidifier off payload.
+
+    The AeroStream H09 has no mode that halts a running humidistat — in auto (and
+    mode 0) it keeps misting while the probe humidity is below the target, so a bare
+    mode change does not stop it. The only reliable stop is manual mode at zero
+    output, so "off" is mode 1 with manu.lv = 0.
+    """
+    return _build_desired_payload(
+        SHADOW_KEY_HUMIDIFIER,
+        {SHADOW_KEY_MODE: HMDF_MODE_MANUAL, SHADOW_KEY_MANU: {SHADOW_KEY_LEVEL: 0}},
+    )
 
 
 def build_hmdf_manual_payload(level: int) -> dict[str, object]:
@@ -546,8 +554,8 @@ def _parse_dfan_state(dfan: dict[str, object]) -> DuctFanState:
 def _parse_hmdf_state(hmdf: dict[str, object]) -> HumidifierState:
     # Build a sparse result so that partial update/accepted messages (e.g. only
     # containing "auto") don't clobber unrelated fields via _deep_merge_mapping.
-    # The AeroStream H09 reports mode 0 = off, 1 = manual; on/off is derived from
-    # mode (there is no "on" key) and the auto target lives at hmdf.auto.tHumi.
+    # On/off is NOT mode-based (mode 0 and 2 both run the humidistat); the entity
+    # derives it from mode + running level. The auto target lives at hmdf.auto.tHumi.
     result: HumidifierState = {}
 
     manu = _as_dict(hmdf.get(SHADOW_KEY_MANU))
@@ -568,10 +576,7 @@ def _parse_hmdf_state(hmdf: dict[str, object]) -> HumidifierState:
         result["water_warning"] = _as_bool(hmdf.get("waterWarn"))
 
     if SHADOW_KEY_MODE in hmdf:
-        mode = _as_int(hmdf.get(SHADOW_KEY_MODE))
-        result["mode"] = mode
-        if mode is not None:
-            result["on"] = mode != HMDF_MODE_OFF
+        result["mode"] = _as_int(hmdf.get(SHADOW_KEY_MODE))
 
     return result
 

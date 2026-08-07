@@ -134,7 +134,6 @@ async def test_humidifier_state_mapping_and_availability() -> None:
         "shadows": {
             _HUMIDIFIER_DEV_ID: {
                 "hmdf": {
-                    "on": True,
                     "target_humidity": 5500,
                     "mode": HMDF_MODE_MANUAL,
                     "level": 3,
@@ -269,14 +268,20 @@ async def test_humidifier_set_mode_auto_uses_current_target() -> None:
     )
 
 
-async def test_humidifier_turn_on_honors_manual_mode() -> None:
+async def test_humidifier_turn_on_always_engages_auto() -> None:
+    # Even from the manual-at-zero "off" state, turn_on engages the auto humidistat
+    # (carrying the current target) rather than resurrecting manual output.
     coordinator = _StubCoordinator()
-    coordinator.data = {"shadows": {_HUMIDIFIER_DEV_ID: {"hmdf": {"mode": HMDF_MODE_MANUAL}}}}
+    coordinator.data = {
+        "shadows": {
+            _HUMIDIFIER_DEV_ID: {"hmdf": {"mode": HMDF_MODE_MANUAL, "target_humidity": 6600}}
+        },
+    }
     entity = _make_entity(coordinator)
 
     await entity.async_turn_on()
     coordinator.async_publish_shadow_update.assert_awaited_once_with(
-        build_hmdf_manual_payload(HMDF_DEFAULT_MANUAL_LEVEL), device_id=_HUMIDIFIER_DEV_ID
+        build_hmdf_auto_payload(6600), device_id=_HUMIDIFIER_DEV_ID
     )
 
 
@@ -295,13 +300,29 @@ async def test_humidifier_turn_on_defaults_to_auto_with_current_target() -> None
     )
 
 
-async def test_humidifier_mode_property_off_and_auto() -> None:
+async def test_humidifier_mode_and_is_on_states() -> None:
     coordinator = _StubCoordinator()
-    coordinator.data = {"shadows": {_HUMIDIFIER_DEV_ID: {"hmdf": {"mode": HMDF_MODE_OFF}}}}
     entity = _make_entity(coordinator)
-    # Off reports no HA mode but is_on reflects the off state.
-    assert entity.mode is None
 
-    # Auto (mode 2) surfaces as auto.
-    coordinator.data = {"shadows": {_HUMIDIFIER_DEV_ID: {"hmdf": {"mode": HMDF_MODE_AUTO}}}}
+    def _set(hmdf: dict[str, object]) -> None:
+        coordinator.data = {"shadows": {_HUMIDIFIER_DEV_ID: {"hmdf": hmdf}}}
+
+    # Auto is armed -> on, even with no running level yet.
+    _set({"mode": HMDF_MODE_AUTO})
     assert entity.mode == "auto"
+    assert entity.is_on is True
+
+    # Manual with output -> manual + on.
+    _set({"mode": HMDF_MODE_MANUAL, "level": 50})
+    assert entity.mode == "manual"
+    assert entity.is_on is True
+
+    # Manual at zero output is our "off": no active mode, not on.
+    _set({"mode": HMDF_MODE_MANUAL, "level": 0})
+    assert entity.mode is None
+    assert entity.is_on is False
+
+    # Legacy mode 0 reports no mode; on/off follows the running level.
+    _set({"mode": HMDF_MODE_OFF, "level": 50})
+    assert entity.mode is None
+    assert entity.is_on is True
