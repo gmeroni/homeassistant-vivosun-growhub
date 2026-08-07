@@ -11,6 +11,7 @@ from custom_components.vivosun_growhub.const import (
     DOMAIN,
     HMDF_DEFAULT_AUTO_TARGET,
     HMDF_DEFAULT_MANUAL_LEVEL,
+    HMDF_MODE_AUTO,
     HMDF_MODE_MANUAL,
     HMDF_MODE_OFF,
     TEMP_SCALE_FACTOR,
@@ -24,9 +25,9 @@ from custom_components.vivosun_growhub.models import DeviceInfo, RuntimeData
 from custom_components.vivosun_growhub.shadow import (
     build_dhmdf_on_payload,
     build_dhmdf_target_payload,
+    build_hmdf_auto_payload,
     build_hmdf_manual_payload,
     build_hmdf_off_payload,
-    build_hmdf_target_payload,
 )
 
 if TYPE_CHECKING:
@@ -162,9 +163,11 @@ async def test_humidifier_commands_publish_expected_shadow_payloads() -> None:
     coordinator = _StubCoordinator()
     entity = _make_entity(coordinator)
 
+    # No seeded state -> mode unknown -> turn_on defaults to auto (the humidistat).
     await entity.async_turn_on()
     coordinator.async_publish_shadow_update.assert_awaited_once_with(
-        build_hmdf_manual_payload(HMDF_DEFAULT_MANUAL_LEVEL), device_id=_HUMIDIFIER_DEV_ID
+        build_hmdf_auto_payload(HMDF_DEFAULT_AUTO_TARGET * TEMP_SCALE_FACTOR),
+        device_id=_HUMIDIFIER_DEV_ID,
     )
 
     coordinator.async_publish_shadow_update.reset_mock()
@@ -176,13 +179,13 @@ async def test_humidifier_commands_publish_expected_shadow_payloads() -> None:
     coordinator.async_publish_shadow_update.reset_mock()
     await entity.async_set_humidity(55)
     coordinator.async_publish_shadow_update.assert_awaited_once_with(
-        build_hmdf_target_payload(5500), device_id=_HUMIDIFIER_DEV_ID
+        build_hmdf_auto_payload(5500), device_id=_HUMIDIFIER_DEV_ID
     )
 
     coordinator.async_publish_shadow_update.reset_mock()
     await entity.async_set_mode("auto")
     coordinator.async_publish_shadow_update.assert_awaited_once_with(
-        build_hmdf_target_payload(HMDF_DEFAULT_AUTO_TARGET * TEMP_SCALE_FACTOR),
+        build_hmdf_auto_payload(HMDF_DEFAULT_AUTO_TARGET * TEMP_SCALE_FACTOR),
         device_id=_HUMIDIFIER_DEV_ID,
     )
 
@@ -262,7 +265,33 @@ async def test_humidifier_set_mode_auto_uses_current_target() -> None:
 
     await entity.async_set_mode("auto")
     coordinator.async_publish_shadow_update.assert_awaited_once_with(
-        build_hmdf_target_payload(5959), device_id=_HUMIDIFIER_DEV_ID
+        build_hmdf_auto_payload(5959), device_id=_HUMIDIFIER_DEV_ID
+    )
+
+
+async def test_humidifier_turn_on_honors_manual_mode() -> None:
+    coordinator = _StubCoordinator()
+    coordinator.data = {"shadows": {_HUMIDIFIER_DEV_ID: {"hmdf": {"mode": HMDF_MODE_MANUAL}}}}
+    entity = _make_entity(coordinator)
+
+    await entity.async_turn_on()
+    coordinator.async_publish_shadow_update.assert_awaited_once_with(
+        build_hmdf_manual_payload(HMDF_DEFAULT_MANUAL_LEVEL), device_id=_HUMIDIFIER_DEV_ID
+    )
+
+
+async def test_humidifier_turn_on_defaults_to_auto_with_current_target() -> None:
+    coordinator = _StubCoordinator()
+    coordinator.data = {
+        "shadows": {
+            _HUMIDIFIER_DEV_ID: {"hmdf": {"mode": HMDF_MODE_AUTO, "target_humidity": 7000}}
+        },
+    }
+    entity = _make_entity(coordinator)
+
+    await entity.async_turn_on()
+    coordinator.async_publish_shadow_update.assert_awaited_once_with(
+        build_hmdf_auto_payload(7000), device_id=_HUMIDIFIER_DEV_ID
     )
 
 
@@ -273,6 +302,6 @@ async def test_humidifier_mode_property_off_and_auto() -> None:
     # Off reports no HA mode but is_on reflects the off state.
     assert entity.mode is None
 
-    # Any non-off, non-manual integer surfaces as auto.
-    coordinator.data = {"shadows": {_HUMIDIFIER_DEV_ID: {"hmdf": {"mode": 2}}}}
+    # Auto (mode 2) surfaces as auto.
+    coordinator.data = {"shadows": {_HUMIDIFIER_DEV_ID: {"hmdf": {"mode": HMDF_MODE_AUTO}}}}
     assert entity.mode == "auto"

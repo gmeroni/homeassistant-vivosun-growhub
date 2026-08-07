@@ -18,9 +18,9 @@ from custom_components.vivosun_growhub.shadow import (
     build_dfan_level_payload,
     build_dhmdf_on_payload,
     build_dhmdf_target_payload,
+    build_hmdf_auto_payload,
     build_hmdf_manual_payload,
     build_hmdf_off_payload,
-    build_hmdf_target_payload,
     build_light_level_payload,
     build_light_mode_payload,
     build_light_spectrum_payload,
@@ -321,9 +321,10 @@ def test_non_level_payload_builders_match_required_structure() -> None:
     assert build_hmdf_manual_payload(50) == {
         "state": {"desired": {"hmdf": {"mode": 1, "manu": {"lv": 50}}}}
     }
-    assert build_hmdf_target_payload(5500) == {
-        "state": {"desired": {"hmdf": {"auto": {"tHumi": 5500}}}}
+    assert build_hmdf_auto_payload(5500) == {
+        "state": {"desired": {"hmdf": {"mode": 2, "auto": {"tHumi": 5500}}}}
     }
+    assert build_hmdf_auto_payload() == {"state": {"desired": {"hmdf": {"mode": 2}}}}
     assert build_dfan_auto_mode_payload(True) == {"state": {"desired": {"dFan": {"mode": 1}}}}
     assert build_dfan_auto_threshold_payload("tMax", 2800) == {
         "state": {"desired": {"dFan": {"auto": {"tMax": 2800}}}}

@@ -24,9 +24,9 @@ from .entity_helpers import build_device_info, is_entity_available, sensor_slice
 from .shadow import (
     build_dhmdf_on_payload,
     build_dhmdf_target_payload,
+    build_hmdf_auto_payload,
     build_hmdf_manual_payload,
     build_hmdf_off_payload,
-    build_hmdf_target_payload,
 )
 
 if TYPE_CHECKING:
@@ -128,8 +128,7 @@ class VivosunHumidifierEntity(CoordinatorEntity[VivosunCoordinator], HumidifierE
             return "manual"
         if mode == HMDF_MODE_OFF:
             return None
-        # Any other reported mode (auto/cycle/timer) surfaces as auto; the exact
-        # auto integer is not yet confirmed for this device.
+        # Auto (2) and any other running mode (cycle/timer) surface as auto.
         return "auto"
 
     @property
@@ -156,11 +155,17 @@ class VivosunHumidifierEntity(CoordinatorEntity[VivosunCoordinator], HumidifierE
         return attrs
 
     async def async_turn_on(self, **kwargs: object) -> None:
-        """Turn on the humidifier (manual mode at the default mist level)."""
+        """Turn on the humidifier, re-asserting the currently selected mode.
+
+        Auto (the humidistat) is the default; manual is only used when it is the
+        active mode, since it runs at a fixed mist level rather than to a target.
+        """
         _ = kwargs
-        await self.coordinator.async_publish_shadow_update(
-            build_hmdf_manual_payload(HMDF_DEFAULT_MANUAL_LEVEL), device_id=self._device_id
-        )
+        if self._hmdf_state().get("mode") == HMDF_MODE_MANUAL:
+            payload = build_hmdf_manual_payload(HMDF_DEFAULT_MANUAL_LEVEL)
+        else:
+            payload = build_hmdf_auto_payload(self._auto_target_raw())
+        await self.coordinator.async_publish_shadow_update(payload, device_id=self._device_id)
 
     async def async_turn_off(self, **kwargs: object) -> None:
         """Turn off the humidifier (mode 0)."""
@@ -170,10 +175,14 @@ class VivosunHumidifierEntity(CoordinatorEntity[VivosunCoordinator], HumidifierE
         )
 
     async def async_set_humidity(self, humidity: int) -> None:
-        """Set the auto target humidity percentage (hmdf.auto.tHumi)."""
+        """Set the target humidity and engage auto (mode 2 + hmdf.auto.tHumi).
+
+        A humidity target is a humidistat request, so this also switches the device
+        into auto mode — writing the target alone leaves the device idle.
+        """
         target_raw = int(humidity * TEMP_SCALE_FACTOR)
         await self.coordinator.async_publish_shadow_update(
-            build_hmdf_target_payload(target_raw), device_id=self._device_id
+            build_hmdf_auto_payload(target_raw), device_id=self._device_id
         )
 
     async def async_set_mode(self, mode: str) -> None:
@@ -183,20 +192,20 @@ class VivosunHumidifierEntity(CoordinatorEntity[VivosunCoordinator], HumidifierE
                 build_hmdf_manual_payload(HMDF_DEFAULT_MANUAL_LEVEL), device_id=self._device_id
             )
         elif mode == "auto":
-            # The auto-mode integer is unconfirmed for this device, so we mirror the
-            # dehumidifier and write only the auto target humidity. This does not force
-            # the device into auto mode; it sets the target used once auto is active.
-            # Read the raw (basis-point) target straight from the shadow to avoid a
-            # lossy /100 -> *100 round-trip through the float property.
-            raw = self._hmdf_state().get("target_humidity")
-            target_raw = (
-                raw
-                if isinstance(raw, int) and not isinstance(raw, bool)
-                else HMDF_DEFAULT_AUTO_TARGET * TEMP_SCALE_FACTOR
-            )
             await self.coordinator.async_publish_shadow_update(
-                build_hmdf_target_payload(target_raw), device_id=self._device_id
+                build_hmdf_auto_payload(self._auto_target_raw()), device_id=self._device_id
             )
+
+    def _auto_target_raw(self) -> int:
+        """Return the current raw (basis-point) auto target, or a sensible default.
+
+        Reads the raw shadow value to avoid a lossy /100 -> *100 round-trip through
+        the float ``target_humidity`` property.
+        """
+        raw = self._hmdf_state().get("target_humidity")
+        if isinstance(raw, int) and not isinstance(raw, bool):
+            return raw
+        return HMDF_DEFAULT_AUTO_TARGET * TEMP_SCALE_FACTOR
 
     def _hmdf_state(self) -> Mapping[str, object]:
         return shadow_slice(self.coordinator, self._device_id, "hmdf")

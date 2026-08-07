@@ -108,15 +108,16 @@ MODE_CYCLE = 1
 MODE_PLAN = 2
 
 # AeroStream H09 humidifier mode enum. Distinct from the fan/heater MODE_* values
-# above: confirmed from real device shadow captures, the humidifier reports
-# mode 0 = off and mode 1 = manual. The auto-mode integer is not yet confirmed,
-# so control writes the auto target humidity (hmdf.auto.tHumi) without forcing a
-# mode switch (mirroring the dehumidifier).
+# above; confirmed from real device shadow captures: 0 = off, 1 = manual (runs at
+# hmdf.manu.lv), 2 = auto (humidistat: mists at hmdf.auto.lvOn while the probe
+# humidity is below hmdf.auto.tHumi). Auto only engages when mode is set to 2 —
+# writing the target alone does nothing.
 HMDF_MODE_OFF = 0
 HMDF_MODE_MANUAL = 1
+HMDF_MODE_AUTO = 2
 # manu.lv is a 0..100 percentage (matches the device's own auto.lvOn default of 50).
 HMDF_DEFAULT_MANUAL_LEVEL = 50
-# Target humidity (%) used for set_mode("auto") when no current target is known.
+# Target humidity (%) used for auto mode when no current target is known.
 HMDF_DEFAULT_AUTO_TARGET = 60
 
 SHADOW_ROOT_STATE = "state"

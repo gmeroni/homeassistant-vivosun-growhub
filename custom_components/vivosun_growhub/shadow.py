@@ -9,6 +9,7 @@ from .const import (
     CFAN_LEVEL_MAP,
     CFAN_NATURAL_WIND_VALUE,
     DFAN_LEVEL_MAP,
+    HMDF_MODE_AUTO,
     HMDF_MODE_MANUAL,
     HMDF_MODE_OFF,
     LIGHT_MIN_BRIGHTNESS,
@@ -400,16 +401,18 @@ def build_hmdf_manual_payload(level: int) -> dict[str, object]:
     )
 
 
-def build_hmdf_target_payload(target_humidity: int) -> dict[str, object]:
-    """Build desired humidifier auto target humidity under ``hmdf.auto.tHumi``.
+def build_hmdf_auto_payload(target_humidity: int | None = None) -> dict[str, object]:
+    """Build desired humidifier auto-mode payload (mode 2).
 
-    ``target_humidity`` is the raw value scaled by 100 (e.g. ``5959`` = 59.59%).
-    Mirrors the dehumidifier: this writes only the auto target and does not send a
-    mode integer, since the humidifier's auto-mode enum value is not yet confirmed.
+    Auto is a humidistat: the device mists at ``hmdf.auto.lvOn`` while the probe
+    humidity is below ``hmdf.auto.tHumi``. Setting the target alone does nothing;
+    ``mode`` must be 2 for auto to engage. When ``target_humidity`` is given it is
+    the raw value scaled by 100 (e.g. ``5959`` = 59.59%) written to ``auto.tHumi``.
     """
-    return _build_desired_payload(
-        SHADOW_KEY_HUMIDIFIER, {SHADOW_KEY_AUTO: {"tHumi": target_humidity}}
-    )
+    hmdf: dict[str, object] = {SHADOW_KEY_MODE: HMDF_MODE_AUTO}
+    if target_humidity is not None:
+        hmdf[SHADOW_KEY_AUTO] = {"tHumi": target_humidity}
+    return _build_desired_payload(SHADOW_KEY_HUMIDIFIER, hmdf)
 
 
 def build_heat_on_payload(on: bool) -> dict[str, object]:
