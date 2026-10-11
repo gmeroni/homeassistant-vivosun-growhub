@@ -9,8 +9,8 @@ from .const import (
     CFAN_LEVEL_MAP,
     CFAN_NATURAL_WIND_VALUE,
     DFAN_LEVEL_MAP,
-    HMDF_MODE_AUTO,
-    HMDF_MODE_MANUAL,
+    H09_MODE_AUTO,
+    H09_MODE_MANUAL,
     LIGHT_MIN_BRIGHTNESS,
     MODE_AUTO,
     SENSOR_UNAVAILABLE_SENTINEL,
@@ -382,42 +382,44 @@ def build_dfan_auto_threshold_payload(field: str, value: int | None) -> dict[str
     return _build_desired_payload(SHADOW_KEY_DUCT_FAN, {SHADOW_KEY_AUTO: {field: normalized_value}})
 
 
-def build_hmdf_off_payload() -> dict[str, object]:
-    """Build desired humidifier off payload.
+def build_hmdf_on_payload(on: bool) -> dict[str, object]:
+    """Build desired humidifier on/off payload."""
+    return _build_desired_payload(SHADOW_KEY_HUMIDIFIER, {"on": int(on)})
 
-    The AeroStream H09 has no mode that halts a running humidistat — in auto (and
-    mode 0) it keeps misting while the probe humidity is below the target, so a bare
-    mode change does not stop it. The only reliable stop is manual mode at zero
-    output, so "off" is mode 1 with manu.lv = 0.
-    """
+
+def build_hmdf_level_payload(level: int) -> dict[str, object]:
+    """Build desired humidifier manual level payload."""
+    if level < 0 or level > 10:
+        raise ValueError("Humidifier level must be in range 0..10")
     return _build_desired_payload(
         SHADOW_KEY_HUMIDIFIER,
-        {SHADOW_KEY_MODE: HMDF_MODE_MANUAL, SHADOW_KEY_MANU: {SHADOW_KEY_LEVEL: 0}},
+        {SHADOW_KEY_MODE: 0, SHADOW_KEY_MANU: {SHADOW_KEY_LEVEL: level}},
     )
 
 
-def build_hmdf_manual_payload(level: int) -> dict[str, object]:
-    """Build desired humidifier manual payload (mode 1) at a mist level.
+def build_hmdf_mode_payload(mode: int) -> dict[str, object]:
+    """Build desired humidifier mode payload (0=manual, 1=auto)."""
+    return _build_desired_payload(SHADOW_KEY_HUMIDIFIER, {SHADOW_KEY_MODE: mode})
 
-    ``level`` is a 0..100 percentage written straight into ``hmdf.manu.lv``.
-    """
-    if level < 0 or level > 100:
-        raise ValueError("Humidifier manual level must be in range 0..100")
+
+def build_hmdf_target_payload(target_humidity: int) -> dict[str, object]:
+    """Build desired humidifier auto target humidity (raw, scaled by 100)."""
+    return _build_desired_payload(SHADOW_KEY_HUMIDIFIER, {"targetHumi": target_humidity})
+
+
+def build_h09_manual_payload(level: int) -> dict[str, object]:
+    """Set the H09 manual mist output, including zero to stop."""
+    if not 0 <= level <= 100:
+        raise ValueError("H09 manual mist level must be in range 0..100")
     return _build_desired_payload(
         SHADOW_KEY_HUMIDIFIER,
-        {SHADOW_KEY_MODE: HMDF_MODE_MANUAL, SHADOW_KEY_MANU: {SHADOW_KEY_LEVEL: level}},
+        {SHADOW_KEY_MODE: H09_MODE_MANUAL, SHADOW_KEY_MANU: {SHADOW_KEY_LEVEL: level}},
     )
 
 
-def build_hmdf_auto_payload(target_humidity: int | None = None) -> dict[str, object]:
-    """Build desired humidifier auto-mode payload (mode 2).
-
-    Auto is a humidistat: the device mists at ``hmdf.auto.lvOn`` while the probe
-    humidity is below ``hmdf.auto.tHumi``. Setting the target alone does nothing;
-    ``mode`` must be 2 for auto to engage. When ``target_humidity`` is given it is
-    the raw value scaled by 100 (e.g. ``5959`` = 59.59%) written to ``auto.tHumi``.
-    """
-    hmdf: dict[str, object] = {SHADOW_KEY_MODE: HMDF_MODE_AUTO}
+def build_h09_auto_payload(target_humidity: int | None = None) -> dict[str, object]:
+    """Engage H09 automatic humidity control, optionally setting its target."""
+    hmdf: dict[str, object] = {SHADOW_KEY_MODE: H09_MODE_AUTO}
     if target_humidity is not None:
         hmdf[SHADOW_KEY_AUTO] = {"tHumi": target_humidity}
     return _build_desired_payload(SHADOW_KEY_HUMIDIFIER, hmdf)
@@ -552,32 +554,29 @@ def _parse_dfan_state(dfan: dict[str, object]) -> DuctFanState:
 
 
 def _parse_hmdf_state(hmdf: dict[str, object]) -> HumidifierState:
-    # Build a sparse result so that partial update/accepted messages (e.g. only
-    # containing "auto") don't clobber unrelated fields via _deep_merge_mapping.
-    # On/off is NOT mode-based (mode 0 and 2 both run the humidistat); the entity
-    # derives it from mode + running level. The auto target lives at hmdf.auto.tHumi.
-    result: HumidifierState = {}
-
     manu = _as_dict(hmdf.get(SHADOW_KEY_MANU))
     manual_level = _as_int(manu.get(SHADOW_KEY_LEVEL)) if manu is not None else None
     level = _as_int(hmdf.get(SHADOW_KEY_LEVEL))
     if level is None:
         level = manual_level
-    if level is not None:
-        result["level"] = level
 
+    result: HumidifierState = {}
+    if "on" in hmdf:
+        result["on"] = _as_bool(hmdf["on"])
+    if SHADOW_KEY_LEVEL in hmdf or manual_level is not None:
+        result["level"] = level
+    if SHADOW_KEY_MODE in hmdf:
+        result["mode"] = _as_int(hmdf[SHADOW_KEY_MODE])
+    if "waterWarn" in hmdf:
+        result["water_warning"] = _as_bool(hmdf["waterWarn"])
+
+    if "targetHumi" in hmdf:
+        result["target_humidity"] = _normalize_sentinel_int(_as_int(hmdf["targetHumi"]))
     auto = _as_dict(hmdf.get(SHADOW_KEY_AUTO))
     if auto is not None and "tHumi" in auto:
-        raw_humi = _normalize_sentinel_int(_as_int(auto.get("tHumi")))
-        if raw_humi is not None:
-            result["target_humidity"] = raw_humi
-
-    if "waterWarn" in hmdf:
-        result["water_warning"] = _as_bool(hmdf.get("waterWarn"))
-
-    if SHADOW_KEY_MODE in hmdf:
-        result["mode"] = _as_int(hmdf.get(SHADOW_KEY_MODE))
-
+        nested_target = _normalize_sentinel_int(_as_int(auto["tHumi"]))
+        if result.get("target_humidity") is None:
+            result["target_humidity"] = nested_target
     return result
 
 

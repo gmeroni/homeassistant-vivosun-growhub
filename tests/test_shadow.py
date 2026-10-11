@@ -18,9 +18,8 @@ from custom_components.vivosun_growhub.shadow import (
     build_dfan_level_payload,
     build_dhmdf_on_payload,
     build_dhmdf_target_payload,
-    build_hmdf_auto_payload,
-    build_hmdf_manual_payload,
-    build_hmdf_off_payload,
+    build_h09_auto_payload,
+    build_h09_manual_payload,
     build_light_level_payload,
     build_light_mode_payload,
     build_light_spectrum_payload,
@@ -301,9 +300,9 @@ def test_level_payload_builder_validates_bounds() -> None:
     with pytest.raises(ValueError):
         build_dfan_level_payload(101)
     with pytest.raises(ValueError):
-        build_hmdf_manual_payload(101)
+        build_h09_manual_payload(101)
     with pytest.raises(ValueError):
-        build_hmdf_manual_payload(-1)
+        build_h09_manual_payload(-1)
 
 
 def test_non_level_payload_builders_match_required_structure() -> None:
@@ -316,16 +315,16 @@ def test_non_level_payload_builders_match_required_structure() -> None:
     assert build_dhmdf_target_payload(6000) == {
         "state": {"desired": {"dhmdf": {"auto": {"tHumi": 6000}}}}
     }
-    assert build_hmdf_off_payload() == {
+    assert build_h09_manual_payload(0) == {
         "state": {"desired": {"hmdf": {"mode": 1, "manu": {"lv": 0}}}}
     }
-    assert build_hmdf_manual_payload(50) == {
+    assert build_h09_manual_payload(50) == {
         "state": {"desired": {"hmdf": {"mode": 1, "manu": {"lv": 50}}}}
     }
-    assert build_hmdf_auto_payload(5500) == {
+    assert build_h09_auto_payload(5500) == {
         "state": {"desired": {"hmdf": {"mode": 2, "auto": {"tHumi": 5500}}}}
     }
-    assert build_hmdf_auto_payload() == {"state": {"desired": {"hmdf": {"mode": 2}}}}
+    assert build_h09_auto_payload() == {"state": {"desired": {"hmdf": {"mode": 2}}}}
     assert build_dfan_auto_mode_payload(True) == {"state": {"desired": {"dFan": {"mode": 1}}}}
     assert build_dfan_auto_threshold_payload("tMax", 2800) == {
         "state": {"desired": {"dFan": {"auto": {"tMax": 2800}}}}

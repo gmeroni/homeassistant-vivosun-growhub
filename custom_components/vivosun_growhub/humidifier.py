@@ -11,22 +11,18 @@ from homeassistant.components.humidifier import (
 from homeassistant.components.humidifier.const import HumidifierEntityFeature
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import (
-    DOMAIN,
-    HMDF_DEFAULT_AUTO_TARGET,
-    HMDF_DEFAULT_MANUAL_LEVEL,
-    HMDF_MODE_AUTO,
-    HMDF_MODE_MANUAL,
-    TEMP_SCALE_FACTOR,
-)
+from .const import DOMAIN, H09_MODE_AUTO, H09_MODE_MANUAL, MODE_AUTO, MODE_MANUAL, TEMP_SCALE_FACTOR
 from .coordinator import VivosunCoordinator
 from .entity_helpers import build_device_info, is_entity_available, sensor_slice, shadow_slice
+from .models import client_model_token
 from .shadow import (
     build_dhmdf_on_payload,
     build_dhmdf_target_payload,
-    build_hmdf_auto_payload,
-    build_hmdf_manual_payload,
-    build_hmdf_off_payload,
+    build_h09_auto_payload,
+    build_h09_manual_payload,
+    build_hmdf_mode_payload,
+    build_hmdf_on_payload,
+    build_hmdf_target_payload,
 )
 
 if TYPE_CHECKING:
@@ -62,8 +58,13 @@ async def async_setup_entry(
 
     entities: list[Entity] = []
     humidifiers = [d for d in coordinator.devices if d.device_type == "humidifier"]
-    if humidifiers:
-        entities.extend([VivosunHumidifierEntity(coordinator, d.device_id) for d in humidifiers])
+    for device in humidifiers:
+        entity_type = (
+            VivosunH09HumidifierEntity
+            if client_model_token(device.client_id) == "VSHUMH09"
+            else VivosunHumidifierEntity
+        )
+        entities.append(entity_type(coordinator, device.device_id))
     dehumidifiers = [d for d in coordinator.devices if d.device_type == "dehumidifier"]
     if dehumidifiers:
         entities.extend([VivosunDehumidifierEntity(coordinator, d.device_id) for d in dehumidifiers])
@@ -90,18 +91,11 @@ class VivosunHumidifierEntity(CoordinatorEntity[VivosunCoordinator], HumidifierE
 
     @property
     def is_on(self) -> bool | None:
-        """Return whether the humidifier is producing or armed to produce mist.
-
-        On/off is not a simple mode flag on this device: mode 0 and auto both run
-        the humidistat. Auto counts as on (armed, even when idle at target);
-        otherwise the running level decides (our "off" is manual at level 0).
-        """
+        """Return whether the humidifier is on."""
         hmdf = self._hmdf_state()
-        if hmdf.get("mode") == HMDF_MODE_AUTO:
-            return True
-        level = hmdf.get("level")
-        if isinstance(level, int):
-            return level > 0
+        on = hmdf.get("on")
+        if isinstance(on, bool):
+            return on
         return None
 
     @property
@@ -129,13 +123,8 @@ class VivosunHumidifierEntity(CoordinatorEntity[VivosunCoordinator], HumidifierE
         """Return the current humidifier mode."""
         hmdf = self._hmdf_state()
         mode = hmdf.get("mode")
-        if mode == HMDF_MODE_AUTO:
-            return "auto"
-        if mode == HMDF_MODE_MANUAL:
-            # Manual at zero output is our "off" state — report no active mode.
-            level = hmdf.get("level")
-            if isinstance(level, int) and level > 0:
-                return "manual"
+        if isinstance(mode, int):
+            return "auto" if mode == MODE_AUTO else "manual"
         return None
 
     @property
@@ -162,58 +151,89 @@ class VivosunHumidifierEntity(CoordinatorEntity[VivosunCoordinator], HumidifierE
         return attrs
 
     async def async_turn_on(self, **kwargs: object) -> None:
-        """Turn on the humidistat (auto mode) toward the current/last target.
-
-        Off puts the device in manual-at-zero, so "on" always engages auto rather
-        than resurrecting that. Fixed-output manual is reached via set_mode.
-        """
+        """Turn on the humidifier."""
         _ = kwargs
         await self.coordinator.async_publish_shadow_update(
-            build_hmdf_auto_payload(self._auto_target_raw()), device_id=self._device_id
+            build_hmdf_on_payload(True), device_id=self._device_id
         )
 
     async def async_turn_off(self, **kwargs: object) -> None:
-        """Turn off the humidifier (mode 0)."""
+        """Turn off the humidifier."""
         _ = kwargs
         await self.coordinator.async_publish_shadow_update(
-            build_hmdf_off_payload(), device_id=self._device_id
+            build_hmdf_on_payload(False), device_id=self._device_id
         )
 
     async def async_set_humidity(self, humidity: int) -> None:
-        """Set the target humidity and engage auto (mode 2 + hmdf.auto.tHumi).
-
-        A humidity target is a humidistat request, so this also switches the device
-        into auto mode — writing the target alone leaves the device idle.
-        """
+        """Set target humidity percentage."""
         target_raw = int(humidity * TEMP_SCALE_FACTOR)
         await self.coordinator.async_publish_shadow_update(
-            build_hmdf_auto_payload(target_raw), device_id=self._device_id
+            build_hmdf_target_payload(target_raw), device_id=self._device_id
         )
 
     async def async_set_mode(self, mode: str) -> None:
         """Set humidifier mode (manual or auto)."""
-        if mode == "manual":
+        if mode == "auto":
             await self.coordinator.async_publish_shadow_update(
-                build_hmdf_manual_payload(HMDF_DEFAULT_MANUAL_LEVEL), device_id=self._device_id
+                build_hmdf_mode_payload(MODE_AUTO), device_id=self._device_id
             )
-        elif mode == "auto":
+        elif mode == "manual":
             await self.coordinator.async_publish_shadow_update(
-                build_hmdf_auto_payload(self._auto_target_raw()), device_id=self._device_id
+                build_hmdf_mode_payload(MODE_MANUAL), device_id=self._device_id
             )
-
-    def _auto_target_raw(self) -> int:
-        """Return the current raw (basis-point) auto target, or a sensible default.
-
-        Reads the raw shadow value to avoid a lossy /100 -> *100 round-trip through
-        the float ``target_humidity`` property.
-        """
-        raw = self._hmdf_state().get("target_humidity")
-        if isinstance(raw, int) and not isinstance(raw, bool):
-            return raw
-        return HMDF_DEFAULT_AUTO_TARGET * TEMP_SCALE_FACTOR
 
     def _hmdf_state(self) -> Mapping[str, object]:
         return shadow_slice(self.coordinator, self._device_id, "hmdf")
+
+
+class VivosunH09HumidifierEntity(VivosunHumidifierEntity):
+    """H09 controls use mode and nested setpoints instead of the older on/targetHumi fields."""
+
+    @property
+    def is_on(self) -> bool | None:
+        hmdf = self._hmdf_state()
+        if hmdf.get("mode") == H09_MODE_AUTO:
+            return True
+        if hmdf.get("mode") == H09_MODE_MANUAL:
+            level = hmdf.get("level")
+            return level > 0 if isinstance(level, int) else None
+        return None
+
+    @property
+    def mode(self) -> str | None:
+        hmdf = self._hmdf_state()
+        if hmdf.get("mode") == H09_MODE_AUTO:
+            return "auto"
+        if hmdf.get("mode") == H09_MODE_MANUAL and self.is_on:
+            return "manual"
+        return None
+
+    async def async_turn_on(self, **kwargs: object) -> None:
+        _ = kwargs
+        await self.coordinator.async_publish_shadow_update(
+            build_h09_auto_payload(), device_id=self._device_id
+        )
+
+    async def async_turn_off(self, **kwargs: object) -> None:
+        _ = kwargs
+        await self.coordinator.async_publish_shadow_update(
+            build_h09_manual_payload(0), device_id=self._device_id
+        )
+
+    async def async_set_humidity(self, humidity: int) -> None:
+        await self.coordinator.async_publish_shadow_update(
+            build_h09_auto_payload(int(humidity * TEMP_SCALE_FACTOR)),
+            device_id=self._device_id,
+        )
+
+    async def async_set_mode(self, mode: str) -> None:
+        if mode == "auto":
+            payload = build_h09_auto_payload()
+        elif mode == "manual":
+            payload = build_h09_manual_payload(50)
+        else:
+            return
+        await self.coordinator.async_publish_shadow_update(payload, device_id=self._device_id)
 
 
 class VivosunDehumidifierEntity(CoordinatorEntity[VivosunCoordinator], HumidifierEntity):  # type: ignore[misc]
